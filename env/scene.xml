@@ -1,0 +1,326 @@
+<mujoco model="nl2robot_scene">
+  <!--
+    angle=radian: joint range values in radians.
+    NOTE: geom euler attributes are ALWAYS degrees in MuJoCo regardless of this setting.
+  -->
+  <compiler angle="radian"/>
+  <!--
+    Stability tuning:
+      timestep=0.001   — halved from 0.002; reduces integration error under contact
+      iterations=50    — more constraint solver passes per step; resolves stacking forces cleanly
+      noslip_iterations=10 — extra no-slip passes prevent friction creep under stacked blocks
+      viscosity=0.05   — small Stokes drag on free bodies damps post-release oscillation
+  -->
+  <option gravity="0 0 -9.81" timestep="0.001"
+          iterations="50" noslip_iterations="10"
+          viscosity="0.05"/>
+
+  <!--
+    Collision scheme:
+      floor          : contype=1  conaffinity=1
+      table geoms    : contype=2  conaffinity=2
+      arm link geoms : contype=0  conaffinity=0  (PHANTOM)
+      hand palm      : contype=0  conaffinity=0  (phantom)
+      finger geoms   : contype=1  conaffinity=1  (grip blocks)
+      blocks         : contype=3  conaffinity=3  (floor + table + fingers)
+  -->
+
+  <default>
+    <geom contype="1" conaffinity="1" condim="3" friction="1 0.005 0.0001"/>
+    <joint damping="1.0"/>
+  </default>
+
+  <worldbody>
+
+    <!-- Ground plane -->
+    <geom name="floor" type="plane" size="2 2 0.1" rgba="0.85 0.85 0.85 1"
+          contype="1" conaffinity="1"/>
+
+    <!-- Lights -->
+    <light name="top"  pos="0.5 0 2.0"   dir="0 0 -1"       diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" directional="true"/>
+    <light name="side" pos="1.0 1.0 1.5" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4" directional="true"/>
+
+    <!-- ================================================================
+         FRANKA PANDA  — body hierarchy matches mujoco_menagerie panda.xml
+         Body quaternions implement the DH α-angle frame rotations so that
+         every joint uses axis="0 0 1" in its own body frame (matching the
+         reference default class).  Without these quats the kinematic chain
+         is wrong.
+
+         Reference body positions / quats (from mujoco_menagerie):
+           link1  pos="0 0 0.333"
+           link2  pos="0 0 0"          quat="1 -1  0  0"  (-90° around X)
+           link3  pos="0 -0.316 0"     quat="1  1  0  0"  (+90° around X)
+           link4  pos="0.0825 0 0"     quat="1  1  0  0"  (+90° around X)
+           link5  pos="-0.0825 0.384 0" quat="1 -1  0  0" (-90° around X)
+           link6  pos="0 0 0"          quat="1  1  0  0"  (+90° around X)
+           link7  pos="0.088 0 0"      quat="1  1  0  0"  (+90° around X)
+           hand   pos="0 0 0.107"      quat="0.9238795 0 0 -0.3826834" (-45° Z)
+
+         Visual geometry uses fromto on every cylinder so each segment
+         explicitly spans from its body origin to the child body origin.
+         Sphere connectors sit at pos="0 0 0" in each body to fill the
+         flat-end gap where adjacent cylinders meet at a joint.
+
+         All arm link geoms are PHANTOM (contype=0 conaffinity=0).
+         Geom euler angles are in DEGREES.
+    ================================================================ -->
+    <body name="panda_base" pos="0 0 0.42">
+      <!--
+        Base disc: spans from mounting plane (z=0) to z=0.12.
+        Base column: spans from z=0.12 to z=0.333 (= link1 origin).
+        Both endpoints verified: column top lands exactly at link1 pos.
+      -->
+      <geom name="base_geom" type="cylinder"
+            fromto="0 0 0 0 0 0.12" size="0.07"
+            rgba="0.5 0.5 0.5 1" mass="4" contype="0" conaffinity="0"/>
+      <geom name="base_column" type="cylinder"
+            fromto="0 0 0.12 0 0 0.333" size="0.05"
+            rgba="0.55 0.55 0.55 1" mass="2" contype="0" conaffinity="0"/>
+
+      <!-- link1: d1=0.333 above base; joint1 rotates around Z -->
+      <body name="link1" pos="0 0 0.333">
+        <joint name="joint1" type="hinge" axis="0 0 1"
+               range="-2.8973 2.8973" damping="50"/>
+        <!--
+          Sphere connector at joint1/joint2 origin.
+          Radius 0.06 encloses the base_column end (r=0.05) and the
+          upper-arm cylinder end (r=0.04) with no visible seam.
+        -->
+        <geom type="sphere" size="0.06" pos="0 0 0"
+              rgba="0.65 0.65 0.65 1" mass="4" contype="0" conaffinity="0"/>
+
+        <!-- link2: quat=-90°X  →  local Z becomes world Y  →  joint2 is shoulder bend -->
+        <body name="link2" pos="0 0 0" quat="1 -1 0 0">
+          <!--
+            joint2 lower bound tightened -1.7628 → -1.4 rad (was ±101°, now -80°/+101°).
+            The original lower limit allowed extreme downward shoulder positions that
+            fold the upper arm and elbow links below the table plane (world z=0.42).
+            -1.4 rad preserves the full task workspace (home config uses -0.274 rad)
+            while blocking the problematic deep-fold configurations.
+            joint4 is already forced negative (-3.0718 to -0.0698) which maintains
+            an up-elbow posture; joint2 was the remaining gap.
+          -->
+          <joint name="joint2" type="hinge" axis="0 0 1"
+                 range="-1.4 1.7628" damping="50"/>
+          <!--
+            Upper-arm cylinder: fromto spans from joint2 origin (0,0,0)
+            to link3 origin (0,-0.316,0) in link2 local frame.
+            Axis is local -Y (= world direction after quat).
+            Radius 0.04 matches shoulder sphere edge for smooth taper.
+          -->
+          <geom type="cylinder"
+                fromto="0 0 0 0 -0.316 0" size="0.04"
+                rgba="0.7 0.7 0.7 1" mass="4" contype="0" conaffinity="0"/>
+
+          <!-- link3: d3=0.316 along link2 local -Y; quat restores frame to world-aligned -->
+          <body name="link3" pos="0 -0.316 0" quat="1 1 0 0">
+            <joint name="joint3" type="hinge" axis="0 0 1"
+                   range="-2.8973 2.8973" damping="20"/>
+            <!--
+              Elbow sphere at joint3 origin.
+              Radius 0.05 encloses the upper-arm end (r=0.04) and
+              forearm-stub end (r=0.035) — no visible seam at elbow.
+            -->
+            <geom type="sphere" size="0.05" pos="0 0 0"
+                  rgba="0.65 0.65 0.65 1" mass="3" contype="0" conaffinity="0"/>
+            <!--
+              Forearm stub: fromto spans from joint3 origin (0,0,0)
+              to link4 origin (0.0825,0,0) along local +X.
+              Radius 0.035 matches the diagonal arm below.
+            -->
+            <geom type="cylinder"
+                  fromto="0 0 0 0.0825 0 0" size="0.035"
+                  rgba="0.7 0.7 0.7 1" mass="0.5" contype="0" conaffinity="0"/>
+
+            <!-- link4: a4=0.0825 along +X; quat rotates frame again -->
+            <body name="link4" pos="0.0825 0 0" quat="1 1 0 0">
+              <joint name="joint4" type="hinge" axis="0 0 1"
+                     range="-3.0718 -0.0698" damping="20"/>
+              <!--
+                Sphere connector at joint4 origin fills the gap between
+                the forearm stub end (r=0.035) and the diagonal arm (r=0.04).
+              -->
+              <geom type="sphere" size="0.04" pos="0 0 0"
+                    rgba="0.65 0.65 0.65 1" mass="0" contype="0" conaffinity="0"/>
+              <!--
+                Diagonal arm: fromto spans from joint4 origin (0,0,0)
+                to link5 origin (-0.0825,0.384,0) in link4 local frame.
+                Direction = [-0.210, 0.978, 0] ✓ (matches euler="-90 0 12.12" axis).
+              -->
+              <geom type="cylinder"
+                    fromto="0 0 0 -0.0825 0.384 0" size="0.04"
+                    rgba="0.7 0.7 0.7 1" mass="3" contype="0" conaffinity="0"/>
+
+              <!-- link5: a5=-0.0825, d5=0.384 expressed in link4 local as [-0.0825,0.384,0] -->
+              <body name="link5" pos="-0.0825 0.384 0" quat="1 -1 0 0">
+                <joint name="joint5" type="hinge" axis="0 0 1"
+                       range="-2.8973 2.8973" damping="10"/>
+                <!--
+                  Wrist sphere at joint5/joint6 origin.
+                  Radius 0.05 encloses the diagonal arm end (r=0.04)
+                  and the wrist cylinder end (r=0.035) — smooth wrist knob.
+                -->
+                <geom type="sphere" size="0.05" pos="0 0 0"
+                      rgba="0.65 0.65 0.65 1" mass="2" contype="0" conaffinity="0"/>
+
+                <!-- link6: same position, quat rotates frame -->
+                <body name="link6" pos="0 0 0" quat="1 1 0 0">
+                  <joint name="joint6" type="hinge" axis="0 0 1"
+                         range="-0.0175 3.7525" damping="10"/>
+                  <!--
+                    Wrist cylinder: fromto spans from joint6 origin (0,0,0)
+                    to link7 origin (0.088,0,0) along local +X.
+                  -->
+                  <geom type="cylinder"
+                        fromto="0 0 0 0.088 0 0" size="0.035"
+                        rgba="0.7 0.7 0.7 1" mass="2" contype="0" conaffinity="0"/>
+
+                  <!-- link7: a7=0.088 along +X -->
+                  <body name="link7" pos="0.088 0 0" quat="1 1 0 0">
+                    <joint name="joint7" type="hinge" axis="0 0 1"
+                           range="-2.8973 2.8973" damping="5"/>
+                    <!--
+                      Sphere connector at joint7 origin fills the gap
+                      between the wrist cylinder end (r=0.035) and
+                      the final wrist tube (r=0.03).
+                    -->
+                    <geom type="sphere" size="0.04" pos="0 0 0"
+                          rgba="0.65 0.65 0.65 1" mass="0" contype="0" conaffinity="0"/>
+                    <!--
+                      Final wrist tube: fromto spans from joint7 origin (0,0,0)
+                      to hand origin (0,0,0.107) along local +Z.
+                    -->
+                    <geom type="cylinder"
+                          fromto="0 0 0 0 0 0.107" size="0.03"
+                          rgba="0.5 0.5 0.5 1" mass="1" contype="0" conaffinity="0"/>
+
+                    <!-- hand: d_hand=0.107; quat=-45° around Z (from reference) -->
+                    <body name="hand" pos="0 0 0.107" quat="0.9238795 0 0 -0.3826834">
+                      <!-- Palm: phantom so it doesn't push blocks on approach -->
+                      <geom name="hand_geom" type="box" size="0.04 0.04 0.03"
+                            rgba="0.3 0.3 0.3 1" mass="0.5"
+                            contype="0" conaffinity="0"/>
+
+                      <!--
+                        Fingers at ±Y from hand centre.
+                        Closed inner edge = 0.030 - 0.016 = 0.014 m < block half-width 0.020 m
+                        → 6 mm overlap → solid grip.
+                      -->
+                      <body name="left_finger" pos="0 0.030 0.058">
+                        <joint name="finger_joint1" type="slide"
+                               axis="0 1 0" range="0 0.04" damping="10"/>
+                        <geom type="box" size="0.006 0.016 0.026"
+                              rgba="0.85 0.85 0.85 1" mass="0.1"/>
+                      </body>
+
+                      <body name="right_finger" pos="0 -0.030 0.058">
+                        <joint name="finger_joint2" type="slide"
+                               axis="0 -1 0" range="0 0.04" damping="10"/>
+                        <geom type="box" size="0.006 0.016 0.026"
+                              rgba="0.85 0.85 0.85 1" mass="0.1"/>
+                      </body>
+
+                    </body><!-- hand -->
+                  </body><!-- link7 -->
+                </body><!-- link6 -->
+              </body><!-- link5 -->
+            </body><!-- link4 -->
+          </body><!-- link3 -->
+        </body><!-- link2 -->
+      </body><!-- link1 -->
+    </body><!-- panda_base -->
+
+    <!-- ================================================================
+         TABLE  (surface top at z = 0.4 + 0.02 = 0.42)
+    ================================================================ -->
+    <body name="table" pos="0.5 0 0.4">
+      <geom name="table_top" type="box" size="0.4 0.4 0.02"
+            rgba="0.82 0.71 0.55 1" mass="10" contype="2" conaffinity="2"/>
+      <geom name="leg1" type="box" size="0.025 0.025 0.2" pos=" 0.35  0.35 -0.22"
+            rgba="0.65 0.52 0.38 1" mass="1" contype="2" conaffinity="2"/>
+      <geom name="leg2" type="box" size="0.025 0.025 0.2" pos="-0.35  0.35 -0.22"
+            rgba="0.65 0.52 0.38 1" mass="1" contype="2" conaffinity="2"/>
+      <geom name="leg3" type="box" size="0.025 0.025 0.2" pos=" 0.35 -0.35 -0.22"
+            rgba="0.65 0.52 0.38 1" mass="1" contype="2" conaffinity="2"/>
+      <geom name="leg4" type="box" size="0.025 0.025 0.2" pos="-0.35 -0.35 -0.22"
+            rgba="0.65 0.52 0.38 1" mass="1" contype="2" conaffinity="2"/>
+    </body>
+
+    <!-- ================================================================
+         BLOCKS
+         condim=4   — torsional friction (prevents spinning on contact).
+         friction   — sliding=1.0, torsional=0.05, rolling=0.01
+         solimp     — stiff impedance: dmin=0.99, dmax=0.999, width=0.001
+                      (narrow transition → near-rigid contact, no bounciness)
+         solref     — timeconst=0.004 s (fast recovery), dampratio=1 (critical)
+                      together these produce stiff, well-damped block contacts.
+    ================================================================ -->
+    <body name="red_block" pos="0.4 0.1 0.44">
+      <joint name="red_block_joint" type="free"/>
+      <geom name="red_block_geom" type="box" size="0.02 0.02 0.02"
+            rgba="0.9 0.1 0.1 1" mass="0.1"
+            contype="3" conaffinity="3" condim="4"
+            friction="1.0 0.05 0.01"
+            solimp="0.99 0.999 0.001" solref="0.004 1"/>
+    </body>
+
+    <body name="blue_block" pos="0.4 -0.1 0.44">
+      <joint name="blue_block_joint" type="free"/>
+      <geom name="blue_block_geom" type="box" size="0.02 0.02 0.02"
+            rgba="0.1 0.1 0.9 1" mass="0.1"
+            contype="3" conaffinity="3" condim="4"
+            friction="1.0 0.05 0.01"
+            solimp="0.99 0.999 0.001" solref="0.004 1"/>
+    </body>
+
+    <body name="green_block" pos="0.5 0.0 0.44">
+      <joint name="green_block_joint" type="free"/>
+      <geom name="green_block_geom" type="box" size="0.02 0.02 0.02"
+            rgba="0.1 0.8 0.1 1" mass="0.1"
+            contype="3" conaffinity="3" condim="4"
+            friction="1.0 0.05 0.01"
+            solimp="0.99 0.999 0.001" solref="0.004 1"/>
+    </body>
+
+  </worldbody>
+
+  <visual>
+    <global fovy="45"/>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.0 0.0 0.0"/>
+  </visual>
+
+  <statistic center="0.3 0 0.7" extent="1.4"/>
+
+  <actuator>
+    <motor name="act_joint1"  joint="joint1"        gear="87" ctrllimited="true" ctrlrange="-87 87"/>
+    <motor name="act_joint2"  joint="joint2"        gear="87" ctrllimited="true" ctrlrange="-87 87"/>
+    <motor name="act_joint3"  joint="joint3"        gear="87" ctrllimited="true" ctrlrange="-87 87"/>
+    <motor name="act_joint4"  joint="joint4"        gear="87" ctrllimited="true" ctrlrange="-87 87"/>
+    <motor name="act_joint5"  joint="joint5"        gear="12" ctrllimited="true" ctrlrange="-12 12"/>
+    <motor name="act_joint6"  joint="joint6"        gear="12" ctrllimited="true" ctrlrange="-12 12"/>
+    <motor name="act_joint7"  joint="joint7"        gear="12" ctrllimited="true" ctrlrange="-12 12"/>
+    <motor name="act_finger1" joint="finger_joint1" gear="20" ctrllimited="true" ctrlrange="0 20"/>
+    <motor name="act_finger2" joint="finger_joint2" gear="20" ctrllimited="true" ctrlrange="0 20"/>
+  </actuator>
+
+  <keyframe>
+    <!--
+      qpos layout (30 values):
+        [0:7]   joint1..joint7
+        [7]     finger_joint1
+        [8]     finger_joint2
+        [9:16]  red_block   (xyz + wxyz quat)
+        [16:23] blue_block
+        [23:30] green_block
+      Home config updated after reach-ready search with corrected DH chain.
+    -->
+    <key name="home"
+         qpos="1.9088 -0.274 -1.9756 -2.5453 -0.4954 2.602 1.1471
+               0 0
+               0.4  0.1 0.44  1 0 0 0
+               0.4 -0.1 0.44  1 0 0 0
+               0.5  0.0 0.44  1 0 0 0"/>
+  </keyframe>
+
+</mujoco>
