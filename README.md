@@ -14,6 +14,8 @@ Type a plain English command. A 7-DOF Franka Panda arm executes it in real-time 
 
 NL2Robot bridges the gap between language and physical robot control. It takes an unstructured natural language command, uses an LLM to decompose it into a structured motion plan, validates that plan against physical and semantic constraints, then executes it on a simulated robot arm — with smooth trajectories, stable block stacking, and no manual scripting.
 
+![Animation](https://github.com/user-attachments/assets/ce04606c-2938-4f4e-a083-a96a77960a9c)
+
 The entire pipeline runs end-to-end from a single Python invocation. No ROS. No training data. No learned motion policies.
 
 ---
